@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>מאמן התנועה שלי</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="app-header">
+    <div class="app-title">
+      <span class="app-title-icon">🏋️</span>
+      <span>מאמן התנועה שלי</span>
+    </div>
+    <div class="app-subtitle">ניתוח סקוואט חי מהמצלמה — מדידה בלבד, בלי ציון טכניקה</div>
+  </header>
+
+  <div id="global-error" class="guidance-banner hidden" style="margin: 0 28px 12px; max-width: 1344px; margin-left: auto; margin-right: auto;"></div>
+
+  <main class="app-shell">
+    <section class="main-pane">
+
+      <!-- מסך הגדרה -->
+      <div id="screen-setup" class="screen active">
+        <div class="card">
+          <h2>לפני שמתחילים</h2>
+
+          <div class="field-group">
+            <label class="field-label">צד צילום</label>
+            <div class="side-toggle">
+              <button type="button" class="side-btn" data-side="L">צד שמאל</button>
+              <button type="button" class="side-btn" data-side="R">צד ימין</button>
+            </div>
+            <p class="field-hint">עמדו כך שהצד שנבחר פונה למצלמה. הבחירה תישאר קבועה לכל הסט.</p>
+            <p id="side-required-hint" class="field-hint field-hint-warning hidden">יש לבחור צד לפני הפעלת המצלמה.</p>
+          </div>
+
+          <div class="field-group">
+            <label class="field-label" for="rep-target">יעד חזרות (לא חובה)</label>
+            <input type="number" id="rep-target" min="1" step="1" placeholder="למשל 10">
+          </div>
+
+          <div class="field-group">
+            <label class="field-label toggle-row">
+              <input type="checkbox" id="pace-enable">
+              <span>הגדרת יעד קצב (אופציונלי, כבוי כברירת מחדל)</span>
+            </label>
+            <div id="pace-fields" class="pace-fields hidden">
+              <div class="pace-row">
+                <span class="pace-row-label">ירידה (שניות)</span>
+                <input type="number" step="0.1" min="0" id="pace-descent-min" placeholder="מינ׳">
+                <span class="pace-dash">–</span>
+                <input type="number" step="0.1" min="0" id="pace-descent-max" placeholder="מקס׳">
+              </div>
+              <div class="pace-row">
+                <span class="pace-row-label">עלייה (שניות)</span>
+                <input type="number" step="0.1" min="0" id="pace-ascent-min" placeholder="מינ׳">
+                <span class="pace-dash">–</span>
+                <input type="number" step="0.1" min="0" id="pace-ascent-max" placeholder="מקס׳">
+              </div>
+              <p class="field-hint field-hint-warning">ערכי הדוגמה הם לבדיקת התוכנה בלבד — לא המלצת אימון.</p>
+            </div>
+          </div>
+
+          <button id="btn-start-camera" class="btn btn-primary btn-large">הפעל מצלמה</button>
+        </div>
+
+        <div id="preview-card" class="card hidden">
+          <h2>תצוגה מקדימה</h2>
+          <p class="field-hint">עמדו מהצד למצלמה, כשכל הגוף וכפות הרגליים בפריים.</p>
+          <div class="video-wrap">
+            <img id="video-frame" alt="תצוגת מצלמה">
+            <div id="video-overlay-badge" class="video-badge hidden"></div>
+          </div>
+          <div id="readiness-banner" class="readiness-banner readiness-pending">ממתין לזיהוי...</div>
+          <button id="btn-start-training" class="btn btn-success btn-large" disabled>התחל אימון</button>
+        </div>
+      </div>
+
+      <!-- מסך אימון -->
+      <div id="screen-training" class="screen">
+        <div class="card">
+          <div class="video-wrap">
+            <img id="video-frame-training" alt="וידאו אימון">
+            <div id="paused-badge" class="video-badge hidden">מושהה</div>
+          </div>
+
+          <div id="live-guidance" class="guidance-banner hidden"></div>
+
+          <div class="training-readout">
+            <div class="rep-counter">
+              <div class="rep-counter-number" id="rep-count">0</div>
+              <div class="rep-counter-label">חזרות</div>
+            </div>
+            <div class="phase-display">
+              <div class="phase-label">מצב תנועה</div>
+              <div class="phase-value" id="phase-value">—</div>
+            </div>
+          </div>
+
+          <button id="btn-toggle-details" class="btn btn-link">פרטים ▾</button>
+          <div id="details-panel" class="details-panel hidden">
+            <div>זווית ברך: <span id="detail-angle">—</span></div>
+            <div>ביטחון אגן: <span id="detail-hip">—</span></div>
+            <div>ביטחון ברך: <span id="detail-knee">—</span></div>
+            <div>ביטחון קרסול: <span id="detail-ankle">—</span></div>
+          </div>
+
+          <div class="training-controls">
+            <button id="btn-pause-resume" class="btn btn-secondary btn-large">השהה</button>
+            <button id="btn-finish" class="btn btn-danger btn-large">סיים אימון</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- מסך סיום -->
+      <div id="screen-finished" class="screen">
+        <div class="card">
+          <h2>האימון הסתיים!</h2>
+          <div class="finish-total" id="finish-total">0 חזרות</div>
+          <table class="reps-table" id="reps-table">
+            <thead>
+              <tr>
+                <th>חזרה</th>
+                <th>ירידה</th>
+                <th>עלייה</th>
+                <th>סוג מדידה</th>
+                <th>דגש</th>
+              </tr>
+            </thead>
+            <tbody id="reps-table-body"></tbody>
+          </table>
+          <button id="btn-new-session" class="btn btn-primary btn-large">אימון חדש</button>
+        </div>
+      </div>
+
+    </section>
+
+    <aside class="coach-pane">
+      <div class="coach-header">
+        <span class="coach-avatar">🤖</span>
+        <span>המאמן</span>
+      </div>
+      <div id="coach-log" class="coach-log"></div>
+      <div class="coach-quick-buttons">
+        <button type="button" class="quick-btn" data-q="איך הייתה החזרה האחרונה?">איך הייתה החזרה האחרונה?</button>
+        <button type="button" class="quick-btn" data-q="כמה חזרות עשיתי?">כמה חזרות עשיתי?</button>
+      </div>
+      <form id="coach-form" class="coach-input-row">
+        <input type="text" id="coach-input" placeholder="שאל את המאמן...">
+        <button type="submit" class="btn btn-primary">שלח</button>
+      </form>
+    </aside>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
