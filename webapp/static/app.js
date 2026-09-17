@@ -197,13 +197,28 @@
     el("coach-log").innerHTML = "";
   }
 
-  function addCoachBubble(text, role) {
+  function addCoachBubble(text, role, source) {
     const div = document.createElement("div");
-    div.className = "coach-bubble" + (role === "user" ? " user" : "");
+    let cls = "coach-bubble";
+    if (role === "user") cls += " user";
+    if (source === "llm") cls += " llm";
+    div.className = cls;
     div.textContent = text;
     const log = el("coach-log");
     log.appendChild(div);
     log.scrollTop = log.scrollHeight;
+  }
+
+  function setSmartCoachBadge(enabled) {
+    const badge = el("smart-coach-badge");
+    badge.classList.remove("hidden");
+    if (enabled) {
+      badge.className = "smart-coach-badge on";
+      badge.textContent = "🧠 מאמן חכם פעיל";
+    } else {
+      badge.className = "smart-coach-badge off";
+      badge.textContent = "מבוסס כללים בלבד";
+    }
   }
 
   document.querySelectorAll(".quick-btn").forEach((btn) => {
@@ -235,7 +250,7 @@
         el("rep-count").textContent = msg.rep_number;
         break;
       case "coach_message":
-        addCoachBubble(msg.text);
+        addCoachBubble(msg.text, undefined, msg.source);
         break;
       case "session_summary":
         renderFinishScreen(msg);
@@ -243,6 +258,9 @@
       case "camera_error":
         clearPreviewTimeout();
         showGlobalError(msg.message);
+        break;
+      case "config":
+        setSmartCoachBadge(!!msg.smart_coach_enabled);
         break;
     }
   }

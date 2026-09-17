@@ -27,6 +27,8 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 from rep_logic import RepCounter, SIDE_KEYPOINTS, measure_frame, pace_feedback  # noqa: E402
 from ultralytics import YOLO  # noqa: E402
 
+import coach_llm  # noqa: E402
+
 MODEL_NAME = "yolo11n-pose.pt"
 CAMERA_INDEX = 0
 JPEG_QUALITY = 72
@@ -78,11 +80,20 @@ class SessionState:
         self.target_reached_announced = False
         self.last_t = 0.0
         self.read_failures = 0
+        self.bg_tasks: set[asyncio.Task] = set()
 
     def release_camera(self):
         if self.cap is not None:
             self.cap.release()
             self.cap = None
+
+    def spawn_bg(self, coro):
+        """מריצה משימת רקע (קריאה ל-LLM) בלי לחסום את הלולאה הראשית/זרם המצלמה.
+        שומרת רפרנס כדי שהמשימה לא תיאסף על ידי ה-garbage collector לפני שתסתיים."""
+        task = asyncio.create_task(coro)
+        self.bg_tasks.add(task)
+        task.add_done_callback(self.bg_tasks.discard)
+        return task
 
 
 def guidance_for(num_people: int, angle) -> str | None:
@@ -136,6 +147,27 @@ def answer_question(text: str, state: SessionState) -> str:
     return ("אני מאמן אוטומטי מבוסס מדידות בלבד (בלי חיבור למודל שפה בשלב הזה). אני יכול לענות כרגע "
             "רק על שאלות לגבי מספר החזרות, משכי הירידה/עלייה של החזרה האחרונה, וההשוואה ליעד הקצב "
             "אם הוגדר.")
+
+
+async def _send_llm_rep_cue(send_queue, summary, pace_target, rule_feedback, total_reps):
+    """משימת רקע: מבקשת מה-LLM דגש קצר על החזרה, ושולחת אותו אם הצליח.
+    לא חוסמת שום דבר אחר - אם ה-API איטי/נכשל, פשוט לא נשלחת הודעה נוספת."""
+    cue = await coach_llm.generate_rep_cue(summary, pace_target, rule_feedback, total_reps)
+    if cue:
+        await send_queue.put({"type": "coach_message", "text": f"🧠 {cue}", "source": "llm"})
+
+
+async def _send_chat_answer(send_queue, question, state: "SessionState"):
+    """משימת רקע לתשובת צ'אט: מנסה LLM קודם (אם מוגדר), ונופלת למבוסס-הכללים
+    אם אין LLM, אם הוא נכשל, או אם לקח יותר מדי זמן."""
+    llm_answer = await coach_llm.answer_session_question(
+        question, state.side, state.rep_target, state.pace_target,
+        state.rep_summaries, state.counter.rep_count if state.counter else 0,
+    )
+    if llm_answer:
+        await send_queue.put({"type": "coach_message", "text": f"🧠 {llm_answer}", "source": "llm"})
+    else:
+        await send_queue.put({"type": "coach_message", "text": answer_question(question, state), "source": "rule"})
 
 
 def encode_jpeg_base64(frame) -> str:
@@ -227,7 +259,14 @@ async def camera_loop(send_queue: asyncio.Queue, state: SessionState):
                 state.rep_summaries.append(s)
                 feedback = pace_feedback(s, state.pace_target)
                 await send_queue.put({"type": "rep_summary", **s})
-                await send_queue.put({"type": "coach_message", "text": coach_rep_message(s, feedback)})
+                # המשוב הקיים מבוסס-הכללים נשלח תמיד ומיד - לא מחכים ל-LLM בשבילו.
+                await send_queue.put({
+                    "type": "coach_message", "text": coach_rep_message(s, feedback), "source": "rule",
+                })
+                # דגש נוסף מהמאמן החכם (LLM), אם מוגדר - רץ ברקע, לא עוצר את זרם המצלמה.
+                # אם נכשל/איטי מדי, פשוט לא מגיע דגש נוסף - המשוב מבוסס-הכללים כבר נשלח.
+                total_reps_now = info["rep_count"]
+                state.spawn_bg(_send_llm_rep_cue(send_queue, s, state.pace_target, feedback, total_reps_now))
 
                 if (state.rep_target and info["rep_count"] >= state.rep_target
                         and not state.target_reached_announced):
@@ -254,6 +293,8 @@ async def ws_endpoint(websocket: WebSocket):
     send_queue: asyncio.Queue = asyncio.Queue()
     sender_task = asyncio.create_task(sender_loop(websocket, send_queue))
     loop_task: asyncio.Task | None = None
+
+    await send_queue.put({"type": "config", "smart_coach_enabled": coach_llm.smart_coach_enabled()})
 
     try:
         while True:
@@ -283,7 +324,7 @@ async def ws_endpoint(websocket: WebSocket):
                 state.target_reached_announced = False
                 state.mode = "training"
                 state.last_t = time.monotonic()
-                await send_queue.put({"type": "coach_message", "text": OPENING_MESSAGE_HE})
+                await send_queue.put({"type": "coach_message", "text": OPENING_MESSAGE_HE, "source": "system"})
 
             elif mtype == "pause":
                 if state.mode == "training":
@@ -310,14 +351,20 @@ async def ws_endpoint(websocket: WebSocket):
                 })
 
             elif mtype == "chat_question":
-                answer = answer_question(msg.get("text", ""), state)
-                await send_queue.put({"type": "coach_message", "text": answer})
+                question = msg.get("text", "")
+                if coach_llm.smart_coach_enabled():
+                    state.spawn_bg(_send_chat_answer(send_queue, question, state))
+                else:
+                    answer = answer_question(question, state)
+                    await send_queue.put({"type": "coach_message", "text": answer, "source": "rule"})
 
     except WebSocketDisconnect:
         pass
     finally:
         if loop_task is not None:
             loop_task.cancel()
+        for t in list(state.bg_tasks):
+            t.cancel()
         state.release_camera()
         await send_queue.put(None)
         await sender_task
