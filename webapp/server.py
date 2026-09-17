@@ -145,13 +145,32 @@ def encode_jpeg_base64(frame) -> str:
     return base64.b64encode(buf.tobytes()).decode("ascii")
 
 
+CAMERA_READ_TIMEOUT_SEC = 5.0  # אם קריאה בודדת מהמצלמה נתקעת מעבר לזה (למשל הרשאה תלויה/מצלמה תפוסה)
+
+
 async def camera_loop(send_queue: asyncio.Queue, state: SessionState):
     loop = asyncio.get_event_loop()
     state.last_t = time.monotonic()
     state.read_failures = 0
 
     while state.mode in ("preview", "training", "paused"):
-        ret, frame = await loop.run_in_executor(None, state.cap.read)
+        try:
+            ret, frame = await asyncio.wait_for(
+                loop.run_in_executor(None, state.cap.read), timeout=CAMERA_READ_TIMEOUT_SEC
+            )
+        except TimeoutError:
+            await send_queue.put({
+                "type": "camera_error",
+                "message": (
+                    "המצלמה לא הגיבה בזמן סביר. סיבות אפשריות: יש בקשת הרשאת מצלמה ממתינה מחוץ "
+                    "לדפדפן (בדקו חלונות/התראות אחרות במחשב ואשרו), תוכנה אחרת משתמשת כרגע במצלמה, "
+                    "או שהמצלמה עדיין 'תפוסה' משימוש קודם - נסו לסגור אפליקציות אחרות שמשתמשות "
+                    "במצלמה ולנסות שוב."
+                ),
+            })
+            state.mode = "idle"
+            state.release_camera()
+            break
         if not ret:
             state.read_failures += 1
             if state.read_failures > CAMERA_READ_FAILURE_LIMIT:

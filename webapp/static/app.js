@@ -101,22 +101,37 @@
     }
     const hint = document.getElementById("side-required-hint");
     if (hint) hint.classList.add("hidden");
-    if (!state.ws) connectWebSocket();
-    const trySend = () => {
-      if (state.ws.readyState === WebSocket.OPEN) {
-        send({ type: "start_preview", side: state.side });
-      } else {
-        setTimeout(trySend, 100);
-      }
-    };
-    trySend();
+    hideGlobalError();
+
+    state.previewReady = false;
     el("preview-card").classList.remove("hidden");
     el("readiness-banner").className = "readiness-banner readiness-pending";
-    el("readiness-banner").textContent = "טוען מצלמה...";
+    el("readiness-banner").textContent = "מתחבר למצלמה... (אם מופיעה בקשת הרשאת מצלמה במחשב, יש לאשר אותה)";
     el("btn-start-training").disabled = true;
+    el("btn-start-camera").disabled = true;
+    el("btn-start-camera").textContent = "מתחבר...";
+
+    if (state.previewTimeoutId) clearTimeout(state.previewTimeoutId);
+    state.previewTimeoutId = setTimeout(() => {
+      el("readiness-banner").className = "readiness-banner readiness-pending";
+      el("readiness-banner").textContent =
+        "לא מתקבלת תמונה מהמצלמה. בדקו אם יש בקשת הרשאת מצלמה ממתינה בחלון/התראה אחרת במחשב (מחוץ לדפדפן) ואשרו אותה, ודאו שאף תוכנה אחרת לא משתמשת במצלמה כרגע, ושהשרת (webapp/server.py) עדיין רץ. אפשר ללחוץ שוב על הפעל מצלמה אחרי שבודקים את זה.";
+      el("btn-start-camera").disabled = false;
+      el("btn-start-camera").textContent = "הפעל מצלמה";
+    }, 8000);
+
+    connectWebSocket(() => {
+      send({ type: "start_preview", side: state.side });
+    });
   });
 
   el("btn-start-training").addEventListener("click", () => {
+    if (!state.previewReady) {
+      const banner = el("readiness-banner");
+      banner.className = "readiness-banner readiness-pending";
+      banner.textContent = "עדיין לא זוהו כל נקודות הגוף הנדרשות - אי אפשר להתחיל אימון עדיין.";
+      return;
+    }
     const repTargetVal = el("rep-target").value;
     state.repTarget = repTargetVal ? parseInt(repTargetVal, 10) : null;
 
@@ -226,15 +241,18 @@
         renderFinishScreen(msg);
         break;
       case "camera_error":
+        clearPreviewTimeout();
         showGlobalError(msg.message);
         break;
     }
   }
 
   function handleTick(msg) {
+    clearPreviewTimeout();
     if (msg.mode === "preview") {
       el("video-frame").src = "data:image/jpeg;base64," + msg.jpeg;
       const banner = el("readiness-banner");
+      state.previewReady = !!msg.ready;
       if (msg.ready) {
         banner.className = "readiness-banner readiness-ready";
         banner.textContent = "מוכן! אפשר להתחיל אימון.";
