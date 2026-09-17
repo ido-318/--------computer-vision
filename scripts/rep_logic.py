@@ -1,5 +1,5 @@
-"""לוגיקת חישוב הזווית וספירת החזרות, בלי תלות ב-YOLO/ultralytics — כדי שאפשר יהיה
-לבדוק אותה עם רצפים מדומים של זוויות וזמנים, בלי להריץ מודל בכלל.
+"""לוגיקת חישוב הזווית, ספירת החזרות ותזמון ירידה/עלייה — בלי תלות ב-YOLO/ultralytics
+כדי שאפשר יהיה לבדוק אותה עם רצפים מדומים של זוויות וזמנים, בלי להריץ מודל בכלל.
 
 מיובא על ידי rep_counter_gif.py (שמוסיף את עיבוד ה-GIF/YOLO סביב זה) וגם על ידי
 test_rep_counter.py (בדיקות עם נתונים מדומים).
@@ -47,21 +47,26 @@ def raw_class(angle: float | None) -> str | None:
 
 
 class RepCounter:
-    """מכונת מצבים לספירת חזרות: עמידה -> ירידה -> הגעה לעומק -> עלייה -> עמידה.
+    """מכונת מצבים לספירת חזרות + מדידת משך ירידה/עלייה לכל חזרה.
 
-    שימוש: counter.step(dt, angle) לכל פריים, לפי הסדר, כאשר dt הוא משך הפריים
+    שימוש: counter.step(dt, angle) לכל פריים לפי הסדר, כאשר dt הוא משך הפריים
     *הזה* בשניות (לא זמן מצטבר) ו-angle הוא הזווית שנמדדה או None אם המדידה חסרה.
 
-    עקרונות:
-    - מצב (STAND/BOTTOM) "מאושר" רק אחרי שהתנאי הגולמי החזיק ברציפות לפחות
-      CONFIRM_SEC שניות *של מדידה תקפה בפועל* — זמן שבו המדידה חסרה לא נספר בתוך
-      הרציפות הזו (לא מקדם את השעון), אבל גם לא מאפס אותו אם הוא קצר; רק חריגה
-      מהתנאי הגולמי עצמו (למשל המעבר מ-"עומק" ל-"אמצע") מאפסת את השעון.
-    - חזרה נספרת רק במעבר מאושר ל-STAND, אם וכאשר reached_depth==True (כלומר עברנו
-      דרך BOTTOM מאושר באותו מחזור) *וגם* כבר הייתה בעבר לפחות עמידה אחת מאושרת
-      (have_stand_baseline) — כדי לא לספור רצף שמתחיל באמצע התנועה בלי בסיס עמידה.
-    - אובדן זיהוי רציף מעבר ל-MAX_MISSING_SEC מאפס reached_depth ואת המועמדות
-      הממתינה לאישור (לא את have_stand_baseline — זה נשאר ברגע שהושג פעם אחת).
+    --- ספירת חזרות (כמו קודם, ללא שינוי עקרוני) ---
+    מצב (STAND/BOTTOM) "מאושר" רק אחרי שהתנאי הגולמי החזיק ברציפות לפחות CONFIRM_SEC
+    שניות של מדידה תקפה בפועל (מדידה חסרה מקפיאה את השעון, לא מקדמת ולא מאפסת אותו
+    אם היא קצרה). חזרה נספרת רק במעבר מאושר לעמידה אחרי שהגיעו לעומק מאושר, ורק אם
+    כבר הייתה עמידה מאושרת קודם (have_stand_baseline).
+
+    --- תזמון ירידה/עלייה (חדש) ---
+    בלי קשר להשהיית האישור שלמעלה (שמיועדת רק למניעת ספירה כפולה): לכל מחזור
+    בפועל עוקבים אחרי *זמני האירועים הגולמיים עצמם*:
+    - תחילת ירידה = הפריים הראשון שבו הזווית יוצאת ממצב "עמידה" (חוצה מתחת ל-STAND_ANGLE).
+    - נקודת ההפרדה (תחתית) = הפריים עם הזווית *המינימלית* לאורך כל המחזור (לא סף העומק!).
+    - סיום = הפריים הראשון שבו הזווית חוזרת למצב "עמידה".
+    אם הייתה מדידה חסרה כלשהי (קצרה) במהלך המחזור -> מסומן estimated=True (תזמון משוער).
+    אם הייתה מדידה חסרה *ממושכת* (אותה MAX_MISSING_SEC שמאפס את reached_depth) -> ה"סיכום"
+    של המחזור הזה מבוטל לגמרי (None), גם אם בסופו של דבר עוד מחזור מאוחר יותר כן נספר.
     """
 
     def __init__(self):
@@ -69,7 +74,7 @@ class RepCounter:
         self.reached_depth = False
         self.have_stand_baseline = False
         self.display_phase = "DESCEND"
-        self.t = 0.0  # זמן מצטבר, רק לצורכי לוג/תצוגה - לא משמש בלוגיקת האישור
+        self.t = 0.0  # זמן מצטבר; גם משמש כ"זמן אירוע" לתזמון (לא כולל השהיית אישור)
 
         self._candidate_target: str | None = None
         self._candidate_elapsed = 0.0
@@ -77,13 +82,27 @@ class RepCounter:
         self._missing_elapsed = 0.0
         self._missing_reset_done = False
 
+        self._last_raw: str | None = None  # מחלקת הפריים התקף האחרון (לא מתעדכן במדידה חסרה)
+
+        # מעקב אחרי המחזור הפעיל (ירידה בתהליך, עדיין לא חזרו לעמידה)
+        self._cycle_t_start: float | None = None
+        self._cycle_min_angle: float | None = None
+        self._cycle_min_angle_t: float | None = None
+        self._cycle_had_missing = False
+        self._cycle_long_loss = False
+
+        self._pending_summary: dict | None = None  # מחזור שנסגר (חזר לעמידה) וממתין לאישור הספירה
+
     def step(self, dt: float, angle: float | None) -> dict:
         self.t += dt
         r = raw_class(angle)
         just_completed_rep = False
+        rep_summary = None
 
         if r is None:
             self._missing_elapsed += dt
+            if self._cycle_t_start is not None:
+                self._cycle_had_missing = True
             if not self._missing_reset_done and self._missing_elapsed >= MAX_MISSING_SEC:
                 self.reached_depth = False
                 self._candidate_target = None
@@ -91,12 +110,48 @@ class RepCounter:
                 self._candidate_confirmed = False
                 self._missing_reset_done = True
                 self.display_phase = "LOST"
-            # מדידה חסרה (קצרה או ארוכה): לא מקדמת שום מועמדות לאישור, ולא מאפסת
-            # מועמדות קיימת אם היא קצרה מ-MAX_MISSING_SEC (השעון פשוט מוקפא).
+                if self._cycle_t_start is not None:
+                    self._cycle_long_loss = True
+            # מדידה חסרה: לא בודקים מעברי stand/non-stand ולא מקדמים מועמדות לאישור
         else:
             self._missing_elapsed = 0.0
             self._missing_reset_done = False
 
+            # --- תזמון גולמי: יציאה מעמידה, עדכון מינימום, חזרה לעמידה ---
+            if self._last_raw == "stand" and r != "stand" and self._cycle_t_start is None:
+                self._cycle_t_start = self.t
+                self._cycle_min_angle = angle
+                self._cycle_min_angle_t = self.t
+                self._cycle_had_missing = False
+                self._cycle_long_loss = False
+            elif self._cycle_t_start is not None and angle < self._cycle_min_angle:
+                self._cycle_min_angle = angle
+                self._cycle_min_angle_t = self.t
+
+            if (
+                self._last_raw is not None
+                and self._last_raw != "stand"
+                and r == "stand"
+                and self._cycle_t_start is not None
+            ):
+                if self._cycle_long_loss:
+                    self._pending_summary = None
+                else:
+                    self._pending_summary = {
+                        "t_start": self._cycle_t_start,
+                        "t_bottom": self._cycle_min_angle_t,
+                        "t_end": self.t,
+                        "descent_duration": self._cycle_min_angle_t - self._cycle_t_start,
+                        "ascent_duration": self.t - self._cycle_min_angle_t,
+                        "estimated": self._cycle_had_missing,
+                    }
+                self._cycle_t_start = None
+                self._cycle_min_angle = None
+                self._cycle_min_angle_t = None
+
+            self._last_raw = r
+
+            # --- מכונת המצבים לספירה (עם השהיית אישור, כמו קודם) ---
             if r in ("stand", "bottom"):
                 if self._candidate_target != r:
                     self._candidate_target = r
@@ -108,15 +163,16 @@ class RepCounter:
                     if r == "bottom":
                         if self.have_stand_baseline:
                             self.reached_depth = True
-                        # אם עוד לא הייתה עמידה מאושרת -> "הגעה לעומק" הזו לא נספרת
-                        # לצורך חזרה (אין רצף שמתחיל בעמידה מאושרת).
                     elif r == "stand":
                         self.have_stand_baseline = True
                         if self.reached_depth:
                             self.rep_count += 1
                             just_completed_rep = True
+                            if self._pending_summary is not None:
+                                rep_summary = dict(self._pending_summary, rep_number=self.rep_count)
+                            self._pending_summary = None
                         self.reached_depth = False
-            else:  # "mid" -> משאירים את BOTTOM/STAND האחרון בעינו, אבל מבטלים מועמדות ממתינה
+            else:
                 self._candidate_target = None
                 self._candidate_elapsed = 0.0
                 self._candidate_confirmed = False
@@ -128,4 +184,9 @@ class RepCounter:
             else:
                 self.display_phase = "ASCEND" if self.reached_depth else "DESCEND"
 
-        return {"phase": self.display_phase, "rep_count": self.rep_count, "just_completed_rep": just_completed_rep}
+        return {
+            "phase": self.display_phase,
+            "rep_count": self.rep_count,
+            "just_completed_rep": just_completed_rep,
+            "rep_summary": rep_summary,
+        }

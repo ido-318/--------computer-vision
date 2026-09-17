@@ -155,6 +155,99 @@ def test_only_counts_sequence_starting_from_confirmed_stand():
     return ok1 and ok2
 
 
+def test_known_timing_sequence():
+    """רצף עם זמנים ידועים מראש (מחושבים ידנית), לבדיקת תחילת-ירידה/תחתית/סיום ומשכים."""
+    seq = (
+        [(0.1, 170), (0.1, 170)]  # t=0.1, 0.2 - בסיס עמידה מאושר (elapsed 0.2>=0.12)
+        + [(0.1, 150)]            # t=0.3 - יציאה מעמידה -> t_start צפוי = 0.3
+        + [(0.1, 120)]            # t=0.4
+        + [(0.1, 90)]             # t=0.5
+        + [(0.1, 70)]             # t=0.6 - כאן bottom מאושר (0.1+0.1=0.2>=0.12)
+        + [(0.1, 50)]             # t=0.7 - המינימום -> t_bottom צפוי = 0.7
+        + [(0.1, 70)]             # t=0.8
+        + [(0.1, 90)]             # t=0.9
+        + [(0.1, 120)]            # t=1.0
+        + [(0.1, 150)]            # t=1.1
+        + [(0.1, 170)]            # t=1.2 - חזרה לעמידה (גולמי) -> t_end צפוי = 1.2
+        + [(0.1, 170), (0.1, 170)]  # t=1.3, 1.4 - stand מאושר (0.1+0.1=0.2>=0.12) -> חזרה נספרת כאן, ב-t=1.3
+    )
+    counter = RepCounter()
+    summaries = []
+    for dt, angle in seq:
+        info = counter.step(dt, angle)
+        if info["rep_summary"] is not None:
+            summaries.append(info["rep_summary"])
+
+    ok_count = check("רצף זמנים ידוע: בדיוק חזרה אחת נספרה", counter.rep_count == 1, f"rep_count={counter.rep_count}")
+    ok_summary_exists = check("...והתקבל סיכום חזרה אחד", len(summaries) == 1, f"מספר סיכומים={len(summaries)}")
+    if not ok_summary_exists:
+        return ok_count and ok_summary_exists
+
+    s = summaries[0]
+    eps = 1e-9
+    checks = [
+        check("t_start == 0.3", abs(s["t_start"] - 0.3) < eps, f"t_start={s['t_start']:.4f}"),
+        check("t_bottom == 0.7 (המינימום, לא חציית סף העומק)", abs(s["t_bottom"] - 0.7) < eps, f"t_bottom={s['t_bottom']:.4f}"),
+        check("t_end == 1.2", abs(s["t_end"] - 1.2) < eps, f"t_end={s['t_end']:.4f}"),
+        check("משך ירידה == 0.4s (0.7-0.3)", abs(s["descent_duration"] - 0.4) < eps, f"descent={s['descent_duration']:.4f}"),
+        check("משך עלייה == 0.5s (1.2-0.7)", abs(s["ascent_duration"] - 0.5) < eps, f"ascent={s['ascent_duration']:.4f}"),
+        check("לא מסומן כ'משוער' (אין מדידות חסרות)", s["estimated"] is False),
+        check("rep_number == 1", s["rep_number"] == 1),
+    ]
+    return ok_count and ok_summary_exists and all(checks)
+
+
+def test_estimated_flag_on_short_missing_during_rep():
+    seq = (
+        hold(STAND_A, 0.2)
+        + [(0.1, 150), (0.05, None), (0.1, 90), (0.1, 60)]  # פער קצר (0.05s) באמצע הירידה
+        + hold(BOTTOM_A, 0.2)
+        + hold(STAND_A, 0.2)
+    )
+    counter = RepCounter()
+    summaries = []
+    for dt, angle in seq:
+        info = counter.step(dt, angle)
+        if info["rep_summary"] is not None:
+            summaries.append(info["rep_summary"])
+    ok1 = check("חזרה נספרה למרות הפער הקצר", counter.rep_count == 1, f"rep_count={counter.rep_count}")
+    ok2 = check("...וסומנה 'משוער' (estimated=True) בגלל המדידה החסרה", bool(summaries) and summaries[0]["estimated"] is True)
+    return ok1 and ok2
+
+
+def test_long_loss_suppresses_summary_of_that_rep_only():
+    counter = RepCounter()
+    seq1 = (
+        hold(STAND_A, 0.2)
+        + hold(BOTTOM_A, 0.2)
+        + [(MAX_MISSING_SEC + 0.1, None)]
+        + hold(STAND_A, 0.2)
+    )
+    summaries1 = []
+    for dt, angle in seq1:
+        info = counter.step(dt, angle)
+        if info["rep_summary"] is not None:
+            summaries1.append(info["rep_summary"])
+    ok1 = check(
+        "אחרי אובדן זיהוי ממושך: לא נספרה חזרה ולא הופק סיכום",
+        counter.rep_count == 0 and len(summaries1) == 0,
+        f"rep_count={counter.rep_count}, summaries={len(summaries1)}",
+    )
+
+    seq2 = hold(BOTTOM_A, 0.2) + hold(STAND_A, 0.2)
+    summaries2 = []
+    for dt, angle in seq2:
+        info = counter.step(dt, angle)
+        if info["rep_summary"] is not None:
+            summaries2.append(info["rep_summary"])
+    ok2 = check(
+        "...אבל החזרה המלאה הבאה כן נספרת וכן מקבלת סיכום תקין",
+        counter.rep_count == 1 and len(summaries2) == 1,
+        f"rep_count={counter.rep_count}, summaries={len(summaries2)}",
+    )
+    return ok1 and ok2
+
+
 def main():
     tests = [
         test_two_full_reps,
@@ -163,6 +256,9 @@ def main():
         test_short_missing_does_not_complete_confirmation,
         test_long_missing_after_bottom_resets_partial_rep,
         test_only_counts_sequence_starting_from_confirmed_stand,
+        test_known_timing_sequence,
+        test_estimated_flag_on_short_missing_during_rep,
+        test_long_loss_suppresses_summary_of_that_rep_only,
     ]
     results = [t() for t in tests]
     print(f"\n{sum(results)}/{len(results)} בדיקות עברו.")
