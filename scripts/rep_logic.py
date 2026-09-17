@@ -8,6 +8,8 @@ test_rep_counter.py (בדיקות עם נתונים מדומים).
 import numpy as np
 
 L_HIP, L_KNEE, L_ANKLE = 11, 13, 15
+R_HIP, R_KNEE, R_ANKLE = 12, 14, 16
+SIDE_KEYPOINTS = {"L": (L_HIP, L_KNEE, L_ANKLE), "R": (R_HIP, R_KNEE, R_ANKLE)}
 KP_CONF_THRESHOLD = 0.7
 DEGENERATE_EPS_PX = 2.0
 
@@ -28,11 +30,14 @@ def knee_angle_deg(hip_xy, knee_xy, ankle_xy) -> float | None:
     return float(np.degrees(np.arccos(cos_angle)))
 
 
-def measure_frame(keypoints_xy, keypoints_conf) -> float | None:
-    confs = [keypoints_conf[i] for i in (L_HIP, L_KNEE, L_ANKLE)]
+def measure_frame(keypoints_xy, keypoints_conf, side: str = "L") -> float | None:
+    """זווית ברך לצד הנבחר ('L' או 'R'). ברירת המחדל 'L' שומרת תאימות לאחור
+    עם קריאות קיימות (הסקריפטים על ה-GIF תמיד השתמשו בצד שמאל)."""
+    hip_i, knee_i, ankle_i = SIDE_KEYPOINTS[side]
+    confs = [keypoints_conf[i] for i in (hip_i, knee_i, ankle_i)]
     if min(confs) < KP_CONF_THRESHOLD:
         return None
-    hip, knee, ankle = (keypoints_xy[i] for i in (L_HIP, L_KNEE, L_ANKLE))
+    hip, knee, ankle = (keypoints_xy[i] for i in (hip_i, knee_i, ankle_i))
     return knee_angle_deg(hip, knee, ankle)
 
 
