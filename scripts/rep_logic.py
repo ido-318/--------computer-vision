@@ -190,3 +190,61 @@ class RepCounter:
             "just_completed_rep": just_completed_rep,
             "rep_summary": rep_summary,
         }
+
+
+# --- יעד קצב אופציונלי (מוגדר ע"י המאמן) ---
+# ערכי הדוגמה כאן הם *לצורך בדיקת התוכנה בלבד* — לא המלצת אימון. המאמן יכול לשנות
+# את הטווחים האלה, או להשאיר PACE_TARGET=None כדי לא לקבל משוב קצב בכלל (רק מדידות).
+PACE_TARGET_EXAMPLE = {
+    "descent_range": (2.0, 3.0),  # שניות - טווח יעד לירידה, לצורך בדיקה בלבד
+    "ascent_range": (1.0, 2.0),   # שניות - טווח יעד לעלייה, לצורך בדיקה בלבד
+}
+
+
+def _range_status(value: float, lo: float, hi: float) -> str:
+    if value < lo:
+        return "below"
+    if value > hi:
+        return "above"
+    return "within"
+
+
+def _fmt_range(lo: float, hi: float) -> str:
+    return f"{lo:g}–{hi:g}"
+
+
+def pace_feedback(summary: dict, target: dict | None) -> str | None:
+    """מחזירה דגש אחד בעברית שמשווה בין המדידה ליעד הקצב, או None אם אין יעד מוגדר.
+
+    - אין יעד מוגדר (target=None) -> None (הקוד הקורא מציג רק את המדידות, בלי דגש).
+    - התזמון משוער (summary["estimated"]) -> משפט שאין מספיק ודאות למשוב, בלי השוואה בפועל.
+    - אחרת: משווים ירידה ועלייה לטווחי היעד. אם שני השלבים מחוץ לטווח -> עדיפות לדגש
+      על הירידה. אם שניהם בתוך הטווח -> משפט עובדתי שהקצב בתוך הטווח (לא קביעה על טכניקה).
+    """
+    if target is None:
+        return None
+
+    if summary.get("estimated"):
+        return "התזמון משוער בגלל מדידות חסרות במהלך החזרה — אין מספיק ודאות למשוב על הקצב."
+
+    descent, ascent = summary["descent_duration"], summary["ascent_duration"]
+    d_lo, d_hi = target["descent_range"]
+    a_lo, a_hi = target["ascent_range"]
+    d_status = _range_status(descent, d_lo, d_hi)
+    a_status = _range_status(ascent, a_lo, a_hi)
+
+    def cue(phase: str, value: float, lo: float, hi: float, status: str) -> str:
+        action = f"האט מעט את ה{phase}" if status == "below" else f"האץ מעט את ה{phase}"
+        return (
+            f"ה{phase} נמשכה {value:.2f} שניות; היעד שהוגדר הוא {_fmt_range(lo, hi)} שניות. "
+            f"בחזרה הבאה {action}."
+        )
+
+    if d_status != "within":
+        return cue("ירידה", descent, d_lo, d_hi, d_status)
+    if a_status != "within":
+        return cue("עלייה", ascent, a_lo, a_hi, a_status)
+    return (
+        f"הירידה ({descent:.2f}s) והעלייה ({ascent:.2f}s) בתוך טווחי היעד שהוגדרו "
+        f"(ירידה {_fmt_range(d_lo, d_hi)}s, עלייה {_fmt_range(a_lo, a_hi)}s)."
+    )

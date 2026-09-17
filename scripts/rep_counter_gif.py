@@ -19,9 +19,23 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 from ultralytics import YOLO
 
-from rep_logic import STAND_ANGLE, DEPTH_ANGLE, CONFIRM_SEC, MAX_MISSING_SEC, RepCounter, measure_frame
+from rep_logic import (
+    STAND_ANGLE,
+    DEPTH_ANGLE,
+    CONFIRM_SEC,
+    MAX_MISSING_SEC,
+    PACE_TARGET_EXAMPLE,
+    RepCounter,
+    measure_frame,
+    pace_feedback,
+)
 
 MODEL_NAME = "yolo11n-pose.pt"
+
+# יעד קצב אופציונלי שהמאמן יכול להגדיר (טווח שניות לירידה/עלייה). PACE_TARGET_EXAMPLE
+# הם ערכי דוגמה *לצורך בדיקת התוכנה בלבד* (ראו rep_logic.py) - לא המלצת אימון.
+# אפשר לשנות כאן, או להציב PACE_TARGET = None כדי לקבל מדידות בלבד בלי דגש קצב.
+PACE_TARGET = PACE_TARGET_EXAMPLE
 
 
 def draw_overlay(frame: Image.Image, angle: float | None, phase: str, rep_count: int) -> Image.Image:
@@ -47,6 +61,9 @@ def print_rep_summary_hebrew(summary: dict) -> None:
     ascent = summary["ascent_duration"]
     tag = " (משוער - הייתה מדידה חסרה במהלך החזרה)" if summary["estimated"] else ""
     print(f"  >>> חזרה {n}: משך ירידה {descent:.2f} שניות, משך עלייה {ascent:.2f} שניות{tag}")
+    feedback = pace_feedback(summary, PACE_TARGET)
+    if feedback is not None:
+        print(f"      דגש קצב: {feedback}")
 
 
 def run(gif_path: Path, model: YOLO, verbose: bool = True):

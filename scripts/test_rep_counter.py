@@ -5,7 +5,7 @@
     venv/bin/python scripts/test_rep_counter.py
 """
 
-from rep_logic import RepCounter, STAND_ANGLE, DEPTH_ANGLE, CONFIRM_SEC, MAX_MISSING_SEC
+from rep_logic import RepCounter, STAND_ANGLE, DEPTH_ANGLE, CONFIRM_SEC, MAX_MISSING_SEC, pace_feedback, PACE_TARGET_EXAMPLE
 
 STAND_A = STAND_ANGLE + 10   # ~170, ברור מעל סף העמידה
 BOTTOM_A = DEPTH_ANGLE - 10  # ~90, ברור מתחת לסף העומק
@@ -248,6 +248,54 @@ def test_long_loss_suppresses_summary_of_that_rep_only():
     return ok1 and ok2
 
 
+def _summary(descent, ascent, estimated=False):
+    return {"descent_duration": descent, "ascent_duration": ascent, "estimated": estimated, "rep_number": 1}
+
+
+def test_pace_feedback_no_target():
+    msg = pace_feedback(_summary(1.28, 0.88), target=None)
+    return check("אין יעד מוגדר -> אין דגש (None), רק מדידות", msg is None, f"msg={msg!r}")
+
+
+def test_pace_feedback_estimated_timing():
+    msg = pace_feedback(_summary(2.5, 1.5, estimated=True), target=PACE_TARGET_EXAMPLE)
+    ok = msg is not None and "ודאות" in msg
+    return check("תזמון משוער -> משפט 'אין מספיק ודאות', בלי השוואה", ok, f"msg={msg!r}")
+
+
+def test_pace_feedback_descent_below_range():
+    # דוגמת המשתמש: ירידה 1.28s (מתחת לטווח 2-3), עלייה 0.88s (בתוך 1-2, לא רלוונטי - יש עדיפות לירידה)
+    msg = pace_feedback(_summary(1.28, 0.88), target=PACE_TARGET_EXAMPLE)
+    ok = msg is not None and "ירידה" in msg and "האט" in msg and "1.28" in msg and "2–3" in msg
+    return check("ירידה מתחת לטווח -> דגש על האטת הירידה", ok, f"msg={msg!r}")
+
+
+def test_pace_feedback_descent_above_range():
+    msg = pace_feedback(_summary(3.6, 1.5), target=PACE_TARGET_EXAMPLE)
+    ok = msg is not None and "ירידה" in msg and "האץ" in msg and "3.60" in msg
+    return check("ירידה מעל הטווח -> דגש על האצת הירידה", ok, f"msg={msg!r}")
+
+
+def test_pace_feedback_within_range():
+    msg = pace_feedback(_summary(2.5, 1.5), target=PACE_TARGET_EXAMPLE)
+    ok = msg is not None and "ירידה" in msg and "עלייה" in msg and "טווחי היעד" in msg and "האט" not in msg and "האץ" not in msg
+    return check("שני השלבים בתוך הטווח -> משפט עובדתי בלבד, בלי דגש תיקון", ok, f"msg={msg!r}")
+
+
+def test_pace_feedback_only_ascent_out_of_range():
+    # ירידה בתוך הטווח (2.5), עלייה מעל הטווח (2.4) -> דגש על העלייה בלבד
+    msg = pace_feedback(_summary(2.5, 2.4), target=PACE_TARGET_EXAMPLE)
+    ok = msg is not None and "עלייה" in msg and "ירידה" not in msg.split(";")[0] and "האץ" in msg
+    return check("רק העלייה מחוץ לטווח -> דגש על העלייה בלבד", ok, f"msg={msg!r}")
+
+
+def test_pace_feedback_both_out_of_range_prioritizes_descent():
+    # שני השלבים מחוץ לטווח: ירידה מהירה מדי (1.0, <2) ועלייה איטית מדי (2.5, >2) -> עדיפות לירידה
+    msg = pace_feedback(_summary(1.0, 2.5), target=PACE_TARGET_EXAMPLE)
+    ok = msg is not None and "ירידה" in msg and "האט" in msg and "2.50" not in msg
+    return check("שני השלבים מחוץ לטווח -> עדיפות לדגש על הירידה בלבד", ok, f"msg={msg!r}")
+
+
 def main():
     tests = [
         test_two_full_reps,
@@ -259,6 +307,13 @@ def main():
         test_known_timing_sequence,
         test_estimated_flag_on_short_missing_during_rep,
         test_long_loss_suppresses_summary_of_that_rep_only,
+        test_pace_feedback_no_target,
+        test_pace_feedback_estimated_timing,
+        test_pace_feedback_descent_below_range,
+        test_pace_feedback_descent_above_range,
+        test_pace_feedback_within_range,
+        test_pace_feedback_only_ascent_out_of_range,
+        test_pace_feedback_both_out_of_range_prioritizes_descent,
     ]
     results = [t() for t in tests]
     print(f"\n{sum(results)}/{len(results)} בדיקות עברו.")
