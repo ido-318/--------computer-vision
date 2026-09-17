@@ -25,16 +25,39 @@
     banner.classList.remove("hidden");
   }
 
+  function hideGlobalError() {
+    el("global-error").classList.add("hidden");
+  }
+
   function showScreen(name) {
     Object.values(screens).forEach((s) => s.classList.remove("active"));
     screens[name].classList.add("active");
   }
 
-  function connectWebSocket() {
+  // מחברת WebSocket, ומדלגת על יצירת חיבור כפול אם כבר קיים אחד פתוח/בתהליך פתיחה.
+  // onReady נקרא ברגע שהחיבור פתוח בפועל (מיד אם כבר פתוח, או כשה-open מגיע).
+  function connectWebSocket(onReady) {
+    if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) {
+      if (onReady) {
+        if (state.ws.readyState === WebSocket.OPEN) onReady();
+        else state.ws.addEventListener("open", onReady, { once: true });
+      }
+      return state.ws;
+    }
     const proto = location.protocol === "https:" ? "wss" : "ws";
     const ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.onopen = () => {
+      hideGlobalError();
+      if (onReady) onReady();
+    };
     ws.onmessage = (event) => handleMessage(JSON.parse(event.data));
-    ws.onclose = () => addCoachBubble("החיבור לשרת נסגר. אפשר לרענן את הדף כדי להתחיל מחדש.");
+    ws.onclose = () => {
+      state.ws = null;
+      showGlobalError('החיבור לשרת נסגר (יתכן שהשרת הופעל מחדש). לחצו שוב על "הפעל מצלמה" כדי להתחבר מחדש.');
+    };
+    ws.onerror = () => {
+      showGlobalError("שגיאת תקשורת עם השרת. ודאו שהשרת רץ (venv/bin/python webapp/server.py) ונסו שוב.");
+    };
     state.ws = ws;
     return ws;
   }
@@ -42,7 +65,18 @@
   function send(msg) {
     if (state.ws && state.ws.readyState === WebSocket.OPEN) {
       state.ws.send(JSON.stringify(msg));
+    } else {
+      showGlobalError("אין כרגע חיבור פעיל לשרת. לחצו שוב על \"הפעל מצלמה\" כדי להתחבר מחדש.");
     }
+  }
+
+  function clearPreviewTimeout() {
+    if (state.previewTimeoutId) {
+      clearTimeout(state.previewTimeoutId);
+      state.previewTimeoutId = null;
+    }
+    el("btn-start-camera").disabled = false;
+    el("btn-start-camera").textContent = "הפעל מצלמה";
   }
 
   // ---------- מסך הגדרה ----------
