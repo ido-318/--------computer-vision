@@ -8,6 +8,8 @@
     paceTarget: null,
     finalReps: [],
     everDetected: false,
+    previewReady: false,
+    previewTimeoutId: null,
   };
 
   const el = (id) => document.getElementById(id);
