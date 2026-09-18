@@ -28,13 +28,26 @@
           <h2>לפני שמתחילים</h2>
 
           <div class="field-group">
+            <label class="field-label">תרגיל</label>
+            <div class="side-toggle">
+              <button type="button" class="exercise-btn" data-exercise="squat">סקוואט</button>
+              <button type="button" class="exercise-btn" data-exercise="press">לחיצת כתפיים בעמידה עם משקולות</button>
+            </div>
+            <p id="exercise-required-hint" class="field-hint field-hint-warning hidden">יש לבחור תרגיל לפני הפעלת המצלמה.</p>
+          </div>
+
+          <div id="side-field-group" class="field-group hidden">
             <label class="field-label">צד צילום</label>
             <div class="side-toggle">
               <button type="button" class="side-btn" data-side="L">צד שמאל</button>
               <button type="button" class="side-btn" data-side="R">צד ימין</button>
             </div>
-            <p class="field-hint">עמדו כך שהצד שנבחר פונה למצלמה. הבחירה תישאר קבועה לכל הסט.</p>
+            <p class="field-hint">עמדו כך שהצד שנבחר פונה למצלמה, כשכל הגוף וכפות הרגליים נראים. הבחירה תישאר קבועה לכל הסט.</p>
             <p id="side-required-hint" class="field-hint field-hint-warning hidden">יש לבחור צד לפני הפעלת המצלמה.</p>
+          </div>
+
+          <div id="press-hint-group" class="field-group hidden">
+            <p class="field-hint">עמדו <strong>מול</strong> המצלמה (צילום חזיתי), כששתי הכתפיים, המרפקים וכפות הידיים נראים לאורך כל התנועה.</p>
           </div>
 
           <div class="field-group">
@@ -42,10 +55,10 @@
             <input type="number" id="rep-target" min="1" step="1" placeholder="למשל 10">
           </div>
 
-          <div class="field-group">
+          <div id="pace-field-group" class="field-group">
             <label class="field-label toggle-row">
               <input type="checkbox" id="pace-enable">
-              <span>הגדרת יעד קצב (אופציונלי, כבוי כברירת מחדל)</span>
+              <span>הגדרת יעד קצב (אופציונלי, כבוי כברירת מחדל, זמין לסקוואט בלבד כרגע)</span>
             </label>
             <div id="pace-fields" class="pace-fields hidden">
               <div class="pace-row">
@@ -69,7 +82,7 @@
 
         <div id="preview-card" class="card hidden">
           <h2>תצוגה מקדימה</h2>
-          <p class="field-hint">עמדו מהצד למצלמה, כשכל הגוף וכפות הרגליים בפריים.</p>
+          <p id="preview-hint" class="field-hint">עמדו מהצד למצלמה, כשכל הגוף וכפות הרגליים בפריים.</p>
           <div class="video-wrap">
             <img id="video-frame" alt="תצוגת מצלמה">
             <div id="video-overlay-badge" class="video-badge hidden"></div>
@@ -102,10 +115,8 @@
 
           <button id="btn-toggle-details" class="btn btn-link">פרטים ▾</button>
           <div id="details-panel" class="details-panel hidden">
-            <div>זווית ברך: <span id="detail-angle">—</span></div>
-            <div>ביטחון אגן: <span id="detail-hip">—</span></div>
-            <div>ביטחון ברך: <span id="detail-knee">—</span></div>
-            <div>ביטחון קרסול: <span id="detail-ankle">—</span></div>
+            <div id="detail-metric-row">מדד תנועה: <span id="detail-angle">—</span></div>
+            <div id="detail-confidences"></div>
           </div>
 
           <div class="training-controls">

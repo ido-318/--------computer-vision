@@ -83,15 +83,16 @@ def _get_client():
 
 
 SYSTEM_PROMPT = (
-    'אתה עוזר קצר ותמציתי בתוך אפליקציית אימון סקוואט בשם "מאמן התנועה שלי". '
+    'אתה עוזר קצר ותמציתי בתוך אפליקציית אימון כושר בשם "מאמן התנועה שלי", שמנתחת '
+    "תרגילים שונים (למשל סקוואט, או לחיצת כתפיים בעמידה עם משקולות). "
     "אתה מקבל אך ורק נתונים מספריים/טקסטואליים שנמדדו על ידי מערכת ראייה ממוחשבת - "
     "אתה עצמך לא רואה שום תמונה, וידאו, או תנוחה.\n"
     "כללים מחייבים:\n"
     "1. ענה תמיד בעברית, במשפט אחד קצר (עד כ-25 מילים).\n"
-    "2. התבסס אך ורק על הנתונים שסופקו לך בהודעה הנוכחית. אל תמציא נתונים, תצפיות, "
-    "או פרטים שלא נשלחו אליך במפורש.\n"
+    "2. התבסס אך ורק על הנתונים שסופקו לך בהודעה הנוכחית, כולל סוג התרגיל שצוין. אל תמציא "
+    "נתונים, תצפיות, או פרטים שלא נשלחו אליך במפורש, ואל תתייחס לתרגיל אחר מזה שצוין.\n"
     "3. לעולם אל תקבע אם הטכניקה 'תקינה' או 'לא תקינה', ואל תאבחן פציעה או בעיה רפואית כלשהי.\n"
-    "4. לעולם אל תטען שראית תנוחה, זווית, וידאו או תמונה - קיבלת רק מספרים.\n"
+    "4. לעולם אל תטען שראית תנוחה, זווית, מסלול תנועה, וידאו או תמונה - קיבלת רק מספרים.\n"
     "5. אם המידע שסופק לא מספיק כדי לענות על השאלה או לתת דגש משמעותי, אמור זאת "
     "בפירוש (למשל: \"אין עדיין מספיק נתונים לכך\") במקום לנחש או להמציא.\n"
     "6. מותר להתייחס לקצב (מהר/לאט ביחס ליעד שהוגדר, אם הוגדר) ולמספרים בפועל, בטון תומך וממוקד."
@@ -99,7 +100,8 @@ SYSTEM_PROMPT = (
 
 
 async def generate_rep_cue(
-    summary: dict, pace_target: dict | None, rule_feedback: str | None, total_reps: int
+    summary: dict, pace_target: dict | None, rule_feedback: str | None, total_reps: int,
+    exercise_label: str = "סקוואט",
 ) -> str | None:
     """דגש קצר אחד מה-LLM על חזרה שהושלמה זה עתה, או None אם המאמן החכם כבוי/נכשל.
 
@@ -110,9 +112,10 @@ async def generate_rep_cue(
         return None
 
     data_lines = [
+        f"סוג התרגיל: {exercise_label}",
         f'מספר חזרה בסט: {summary["rep_number"]} (סה"כ חזרות שהושלמו עד כה: {total_reps})',
-        f"משך ירידה: {summary['descent_duration']:.2f} שניות",
-        f"משך עלייה: {summary['ascent_duration']:.2f} שניות",
+        f"משך ירידה (הורדת המשקל/הגוף): {summary['descent_duration']:.2f} שניות",
+        f"משך עלייה (הרמת המשקל/הגוף): {summary['ascent_duration']:.2f} שניות",
         f"מדידה משוערת (הייתה מדידה חסרה במהלך החזרה): {'כן' if summary['estimated'] else 'לא'}",
     ]
     if pace_target:
@@ -133,11 +136,12 @@ async def generate_rep_cue(
 
 async def answer_session_question(
     question: str,
-    side: str,
+    side: str | None,
     rep_target: int | None,
     pace_target: dict | None,
     rep_summaries: list[dict],
     current_rep_count: int,
+    exercise_label: str = "סקוואט",
 ) -> str | None:
     """תשובה מבוססת-נתונים לשאלה חופשית על החזרה האחרונה/האימון הנוכחי, או None."""
     if not smart_coach_enabled():
@@ -152,8 +156,10 @@ async def answer_session_question(
             for s in rep_summaries
         )
 
+    side_line = f"צד מדידה שנבחר: {'שמאל' if side == 'L' else 'ימין'}\n" if side else ""
     context = (
-        f"צד מדידה שנבחר: {'שמאל' if side == 'L' else 'ימין'}\n"
+        f"סוג התרגיל: {exercise_label}\n"
+        f"{side_line}"
         f"יעד חזרות שהוגדר: {rep_target if rep_target else 'לא הוגדר'}\n"
         f"יעד קצב שהוגדר: {pace_target if pace_target else 'לא הוגדר'}\n"
         f"מספר חזרות שהושלמו עד כה בסט: {current_rep_count}\n"

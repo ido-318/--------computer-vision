@@ -24,7 +24,12 @@ from fastapi.staticfiles import StaticFiles
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
-from rep_logic import RepCounter, SIDE_KEYPOINTS, measure_frame, pace_feedback  # noqa: E402
+from rep_logic import RepCounter, SIDE_KEYPOINTS, measure_frame as squat_measure_frame, pace_feedback  # noqa: E402
+from press_logic import (  # noqa: E402
+    PressCounter,
+    L_SHOULDER, R_SHOULDER, L_ELBOW, R_ELBOW, L_WRIST, R_WRIST,
+    measure_frame as press_measure_frame,
+)
 from ultralytics import YOLO  # noqa: E402
 
 import coach_llm  # noqa: E402
@@ -34,8 +39,10 @@ CAMERA_INDEX = 0
 JPEG_QUALITY = 72
 CAMERA_READ_FAILURE_LIMIT = 60
 
-PHASE_HE = {"STAND": "עמידה", "DESCEND": "ירידה", "BOTTOM": "תחתית", "ASCEND": "עלייה", "LOST": "אין זיהוי"}
+PHASE_HE_SQUAT = {"STAND": "עמידה", "DESCEND": "ירידה", "BOTTOM": "תחתית", "ASCEND": "עלייה", "LOST": "אין זיהוי"}
+PHASE_HE_PRESS = {"START": "התחלה", "RAISING": "עלייה", "TOP": "למעלה", "LOWERING": "ירידה", "LOST": "אין זיהוי"}
 SIDE_HE = {"L": "שמאל", "R": "ימין"}
+EXERCISE_LABEL_HE = {"squat": "סקוואט", "press": "לחיצת כתפיים בעמידה עם משקולות"}
 
 CAMERA_HELP_HE = (
     "לא ניתן לפתוח את המצלמה. סביר שאין הרשאת מצלמה לאפליקציה שמריצה את השרת "
@@ -43,14 +50,17 @@ CAMERA_HELP_HE = (
     "Camera -> אפשרו גישה, ואז הפעילו מחדש את השרת."
 )
 
-OPENING_MESSAGE_HE = (
-    "שלום! אני המאמן האוטומטי של אפליקציית "
-    "מאמן התנועה שלי. "
-    "אני עוקב אחרי זווית הברך שלך ומודד משכי ירידה ועלייה ומספר חזרות. "
-    "חשוב לדעת: אני כלי מדידה אוטומטי בלבד (לא מודל שפה מחובר), ואני לא קובע אם הטכניקה שלך תקינה "
-    "ולא מאבחן פציעות. אפשר לשאול אותי בכל שלב, למשל “איך הייתה החזרה האחרונה?” "
-    "או “כמה חזרות עשיתי?”."
-)
+
+def opening_message_he(exercise: str) -> str:
+    metric_desc = "המרחק האנכי של כפות הידיים מעל קו הכתפיים" if exercise == "press" else "זווית הברך"
+    return (
+        "שלום! אני המאמן האוטומטי של אפליקציית מאמן התנועה שלי. "
+        f"אני עוקב אחרי {metric_desc} ומודד משכי ירידה ועלייה ומספר חזרות בתרגיל "
+        f"{EXERCISE_LABEL_HE.get(exercise, exercise)}. "
+        "חשוב לדעת: אני כלי מדידה אוטומטי בלבד (לא מודל שפה מחובר), ואני לא קובע אם הטכניקה שלך תקינה "
+        "ולא מאבחן פציעות. אפשר לשאול אותי בכל שלב, למשל “איך הייתה החזרה האחרונה?” "
+        "או “כמה חזרות עשיתי?”."
+    )
 
 MODEL: YOLO | None = None  # נטען פעם אחת באתחול השרת
 
@@ -77,10 +87,11 @@ class SessionState:
         self.cap: cv2.VideoCapture | None = None
         self.model: YOLO | None = None
         self.mode = "idle"  # idle | preview | training | paused
-        self.side = "L"
+        self.exercise = "squat"  # squat | press
+        self.side = "L"  # רלוונטי לסקוואט בלבד
         self.rep_target: int | None = None
-        self.pace_target: dict | None = None
-        self.counter: RepCounter | None = None
+        self.pace_target: dict | None = None  # רלוונטי לסקוואט בלבד כרגע
+        self.counter: RepCounter | PressCounter | None = None
         self.rep_summaries: list[dict] = []
         self.target_reached_announced = False
         self.last_t = 0.0
@@ -101,12 +112,15 @@ class SessionState:
         return task
 
 
-def guidance_for(num_people: int, angle) -> str | None:
+def guidance_for(exercise: str, num_people: int, value) -> str | None:
     if num_people == 0:
         return "לא מזוהה אף אחד בפריים - היכנס לתמונה."
     if num_people > 1:
         return "מזוהים כמה אנשים בפריים - הניתוח מושהה כדי לא לערבב ביניהם."
-    if angle is None:
+    if value is None:
+        if exercise == "press":
+            return ("לא ניתן לזהות בבירור את שתי הכתפיים/המרפקים/פרקי הידיים - עמוד מול המצלמה "
+                    "כשכל שתי הזרועות גלויות לאורך כל התנועה, ובתאורה טובה.")
         return "לא ניתן לזהות בבירור את הירך/הברך/הקרסול - עמוד מהצד כשכל הגוף כולל כפות הרגליים בפריים, ובתאורה טובה."
     return None
 
@@ -154,10 +168,12 @@ def answer_question(text: str, state: SessionState) -> str:
             "אם הוגדר.")
 
 
-async def _send_llm_rep_cue(send_queue, summary, pace_target, rule_feedback, total_reps):
+async def _send_llm_rep_cue(send_queue, summary, pace_target, rule_feedback, total_reps, exercise: str):
     """משימת רקע: מבקשת מה-LLM דגש קצר על החזרה, ושולחת אותו אם הצליח.
     לא חוסמת שום דבר אחר - אם ה-API איטי/נכשל, פשוט לא נשלחת הודעה נוספת."""
-    cue = await coach_llm.generate_rep_cue(summary, pace_target, rule_feedback, total_reps)
+    cue = await coach_llm.generate_rep_cue(
+        summary, pace_target, rule_feedback, total_reps, EXERCISE_LABEL_HE.get(exercise, exercise)
+    )
     if cue:
         await send_queue.put({"type": "coach_message", "text": f"🧠 {cue}", "source": "llm"})
 
@@ -165,9 +181,11 @@ async def _send_llm_rep_cue(send_queue, summary, pace_target, rule_feedback, tot
 async def _send_chat_answer(send_queue, question, state: "SessionState"):
     """משימת רקע לתשובת צ'אט: מנסה LLM קודם (אם מוגדר), ונופלת למבוסס-הכללים
     אם אין LLM, אם הוא נכשל, או אם לקח יותר מדי זמן."""
+    side_for_llm = state.side if state.exercise == "squat" else None
     llm_answer = await coach_llm.answer_session_question(
-        question, state.side, state.rep_target, state.pace_target,
+        question, side_for_llm, state.rep_target, state.pace_target,
         state.rep_summaries, state.counter.rep_count if state.counter else 0,
+        EXERCISE_LABEL_HE.get(state.exercise, state.exercise),
     )
     if llm_answer:
         await send_queue.put({"type": "coach_message", "text": f"🧠 {llm_answer}", "source": "llm"})
@@ -232,37 +250,50 @@ async def camera_loop(send_queue: asyncio.Queue, state: SessionState):
         result = (await loop.run_in_executor(None, lambda: state.model(frame, verbose=False)))[0]
         num_people = 0 if result.keypoints is None else len(result.keypoints)
 
-        angle = None
+        value = None
         confidences = None
+        metric_label = None
         if num_people == 1:
             xy = result.keypoints[0].xy[0].tolist()
             conf = result.keypoints[0].conf[0].tolist()
-            hip_i, knee_i, ankle_i = SIDE_KEYPOINTS[state.side]
-            confidences = {"hip": conf[hip_i], "knee": conf[knee_i], "ankle": conf[ankle_i]}
-            angle = measure_frame(xy, conf, side=state.side)
+            if state.exercise == "press":
+                confidences = {
+                    "כתף שמאל": conf[L_SHOULDER], "כתף ימין": conf[R_SHOULDER],
+                    "מרפק שמאל": conf[L_ELBOW], "מרפק ימין": conf[R_ELBOW],
+                    "פרק יד שמאל": conf[L_WRIST], "פרק יד ימין": conf[R_WRIST],
+                }
+                value = press_measure_frame(xy, conf)
+                metric_label = "יחס גובה לחיצה"
+            else:
+                hip_i, knee_i, ankle_i = SIDE_KEYPOINTS[state.side]
+                confidences = {"אגן": conf[hip_i], "ברך": conf[knee_i], "קרסול": conf[ankle_i]}
+                value = squat_measure_frame(xy, conf, side=state.side)
+                metric_label = f"זווית ברך {SIDE_HE.get(state.side, state.side)}"
 
         display = result.plot()
         jpeg = encode_jpeg_base64(display)
-        guidance = guidance_for(num_people, angle)
+        guidance = guidance_for(state.exercise, num_people, value)
+        phase_he_map = PHASE_HE_PRESS if state.exercise == "press" else PHASE_HE_SQUAT
 
         if state.mode == "preview":
             await send_queue.put({
                 "type": "tick", "mode": "preview", "jpeg": jpeg,
-                "num_people": num_people, "angle": angle, "ready": angle is not None,
-                "guidance": guidance, "confidences": confidences,
+                "num_people": num_people, "angle": value, "metric_label": metric_label,
+                "ready": value is not None, "guidance": guidance, "confidences": confidences,
             })
         elif state.mode == "training":
-            info = state.counter.step(dt, angle)
+            info = state.counter.step(dt, value)
             await send_queue.put({
                 "type": "tick", "mode": "training", "jpeg": jpeg,
-                "angle": angle, "phase": info["phase"], "phase_he": PHASE_HE.get(info["phase"], info["phase"]),
+                "angle": value, "metric_label": metric_label,
+                "phase": info["phase"], "phase_he": phase_he_map.get(info["phase"], info["phase"]),
                 "rep_count": info["rep_count"], "guidance": guidance, "confidences": confidences,
             })
 
             if info["rep_summary"] is not None:
                 s = info["rep_summary"]
                 state.rep_summaries.append(s)
-                feedback = pace_feedback(s, state.pace_target)
+                feedback = pace_feedback(s, state.pace_target) if state.exercise == "squat" else None
                 await send_queue.put({"type": "rep_summary", **s})
                 # המשוב הקיים מבוסס-הכללים נשלח תמיד ומיד - לא מחכים ל-LLM בשבילו.
                 await send_queue.put({
@@ -271,7 +302,9 @@ async def camera_loop(send_queue: asyncio.Queue, state: SessionState):
                 # דגש נוסף מהמאמן החכם (LLM), אם מוגדר - רץ ברקע, לא עוצר את זרם המצלמה.
                 # אם נכשל/איטי מדי, פשוט לא מגיע דגש נוסף - המשוב מבוסס-הכללים כבר נשלח.
                 total_reps_now = info["rep_count"]
-                state.spawn_bg(_send_llm_rep_cue(send_queue, s, state.pace_target, feedback, total_reps_now))
+                state.spawn_bg(
+                    _send_llm_rep_cue(send_queue, s, state.pace_target, feedback, total_reps_now, state.exercise)
+                )
 
                 if (state.rep_target and info["rep_count"] >= state.rep_target
                         and not state.target_reached_announced):
@@ -307,6 +340,7 @@ async def ws_endpoint(websocket: WebSocket):
             mtype = msg.get("type")
 
             if mtype == "start_preview":
+                state.exercise = msg.get("exercise", "squat")
                 state.side = msg.get("side", "L")
                 if state.cap is None:
                     cap = cv2.VideoCapture(CAMERA_INDEX)
@@ -323,13 +357,15 @@ async def ws_endpoint(websocket: WebSocket):
                     await send_queue.put({"type": "camera_error", "message": CAMERA_HELP_HE})
                     continue
                 state.rep_target = msg.get("rep_target")
-                state.pace_target = msg.get("pace_target")
-                state.counter = RepCounter()
+                state.pace_target = msg.get("pace_target") if state.exercise == "squat" else None
+                state.counter = PressCounter() if state.exercise == "press" else RepCounter()
                 state.rep_summaries = []
                 state.target_reached_announced = False
                 state.mode = "training"
                 state.last_t = time.monotonic()
-                await send_queue.put({"type": "coach_message", "text": OPENING_MESSAGE_HE, "source": "system"})
+                await send_queue.put({
+                    "type": "coach_message", "text": opening_message_he(state.exercise), "source": "system",
+                })
 
             elif mtype == "pause":
                 if state.mode == "training":

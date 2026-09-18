@@ -3,6 +3,7 @@
 
   const state = {
     ws: null,
+    exercise: null,
     side: null,
     repTarget: null,
     paceTarget: null,
@@ -10,6 +11,11 @@
     everDetected: false,
     previewReady: false,
     previewTimeoutId: null,
+  };
+
+  const PREVIEW_HINT_HE = {
+    squat: "עמדו מהצד למצלמה, כשכל הגוף וכפות הרגליים בפריים.",
+    press: "עמדו מול המצלמה (צילום חזיתי), כששתי הכתפיים, המרפקים וכפות הידיים נראים לאורך כל התנועה.",
   };
 
   const el = (id) => document.getElementById(id);
@@ -81,6 +87,31 @@
 
   // ---------- מסך הגדרה ----------
 
+  function resetExerciseDependentSetup() {
+    // מפעילים כשמחליפים תרגיל, כדי שמצב-האימון יתאפס כראוי ולא יישארו הגדרות מתרגיל קודם
+    state.side = null;
+    document.querySelectorAll(".side-btn").forEach((b) => b.classList.remove("selected"));
+    el("side-required-hint").classList.add("hidden");
+    el("preview-card").classList.add("hidden");
+    el("pace-enable").checked = false;
+    el("pace-fields").classList.add("hidden");
+  }
+
+  document.querySelectorAll(".exercise-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      document.querySelectorAll(".exercise-btn").forEach((b) => b.classList.remove("selected"));
+      btn.classList.add("selected");
+      state.exercise = btn.dataset.exercise;
+      el("exercise-required-hint").classList.add("hidden");
+      resetExerciseDependentSetup();
+
+      const isSquat = state.exercise === "squat";
+      el("side-field-group").classList.toggle("hidden", !isSquat);
+      el("press-hint-group").classList.toggle("hidden", isSquat);
+      el("pace-field-group").classList.toggle("hidden", !isSquat);
+    });
+  });
+
   document.querySelectorAll(".side-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       document.querySelectorAll(".side-btn").forEach((b) => b.classList.remove("selected"));
@@ -94,16 +125,20 @@
   });
 
   el("btn-start-camera").addEventListener("click", () => {
-    if (!state.side) {
-      const hint = document.getElementById("side-required-hint");
-      if (hint) hint.classList.remove("hidden");
+    if (!state.exercise) {
+      el("exercise-required-hint").classList.remove("hidden");
       return;
     }
-    const hint = document.getElementById("side-required-hint");
-    if (hint) hint.classList.add("hidden");
+    if (state.exercise === "squat" && !state.side) {
+      el("side-required-hint").classList.remove("hidden");
+      return;
+    }
+    el("exercise-required-hint").classList.add("hidden");
+    el("side-required-hint").classList.add("hidden");
     hideGlobalError();
 
     state.previewReady = false;
+    el("preview-hint").textContent = PREVIEW_HINT_HE[state.exercise] || "";
     el("preview-card").classList.remove("hidden");
     el("readiness-banner").className = "readiness-banner readiness-pending";
     el("readiness-banner").textContent = "מתחבר למצלמה... (אם מופיעה בקשת הרשאת מצלמה במחשב, יש לאשר אותה)";
@@ -121,7 +156,7 @@
     }, 8000);
 
     connectWebSocket(() => {
-      send({ type: "start_preview", side: state.side });
+      send({ type: "start_preview", exercise: state.exercise, side: state.side });
     });
   });
 
@@ -136,7 +171,7 @@
     state.repTarget = repTargetVal ? parseInt(repTargetVal, 10) : null;
 
     state.paceTarget = null;
-    if (el("pace-enable").checked) {
+    if (state.exercise === "squat" && el("pace-enable").checked) {
       const dMin = parseFloat(el("pace-descent-min").value);
       const dMax = parseFloat(el("pace-descent-max").value);
       const aMin = parseFloat(el("pace-ascent-min").value);
@@ -178,16 +213,20 @@
   el("btn-new-session").addEventListener("click", () => {
     paused = false;
     el("btn-pause-resume").textContent = "השהה";
+    state.exercise = null;
+    document.querySelectorAll(".exercise-btn").forEach((b) => b.classList.remove("selected"));
+    el("side-field-group").classList.add("hidden");
+    el("press-hint-group").classList.add("hidden");
+    el("pace-field-group").classList.remove("hidden");
+    resetExerciseDependentSetup();
     showScreen("setup");
   });
 
   function resetTrainingReadout() {
     el("rep-count").textContent = "0";
     el("phase-value").textContent = "—";
-    el("detail-angle").textContent = "—";
-    el("detail-hip").textContent = "—";
-    el("detail-knee").textContent = "—";
-    el("detail-ankle").textContent = "—";
+    el("detail-metric-row").innerHTML = 'מדד תנועה: <span id="detail-angle">—</span>';
+    el("detail-confidences").innerHTML = "";
     el("live-guidance").classList.add("hidden");
   }
 
@@ -286,11 +325,17 @@
         if (msg.angle != null) state.everDetected = true;
         el("rep-count").textContent = msg.rep_count;
         el("phase-value").textContent = state.everDetected ? (msg.phase_he || "—") : "ממתין לזיהוי";
-        el("detail-angle").textContent = msg.angle != null ? msg.angle.toFixed(1) + "°" : "—";
+        const metricLabel = msg.metric_label || "מדד תנועה";
+        const metricValue = msg.angle != null ? msg.angle.toFixed(2) : "—";
+        el("detail-metric-row").innerHTML = `${metricLabel}: <span id="detail-angle">${metricValue}</span>`;
+        const confDiv = el("detail-confidences");
+        confDiv.innerHTML = "";
         if (msg.confidences) {
-          el("detail-hip").textContent = Math.round(msg.confidences.hip * 100) + "%";
-          el("detail-knee").textContent = Math.round(msg.confidences.knee * 100) + "%";
-          el("detail-ankle").textContent = Math.round(msg.confidences.ankle * 100) + "%";
+          Object.entries(msg.confidences).forEach(([label, value]) => {
+            const row = document.createElement("div");
+            row.textContent = `ביטחון ${label}: ${Math.round(value * 100)}%`;
+            confDiv.appendChild(row);
+          });
         }
         const guidanceEl = el("live-guidance");
         if (msg.guidance) {
