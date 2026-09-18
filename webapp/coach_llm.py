@@ -63,6 +63,16 @@ def key_source_label() -> str:
     return {"env": "משתנה סביבה ANTHROPIC_API_KEY", "keychain": "macOS Keychain"}.get(_key_source, "לא הוגדר")
 
 
+def _anthropic_error_message(e) -> str:
+    """מחלצת את הודעת השגיאה *של Anthropic עצמה* מתוך החריגה (e.body['error']['message']),
+    בלי כותרות HTTP, בלי גוף הבקשה, ובלי שום קשר למפתח - רק הטקסט התיאורי שהשרת של
+    Anthropic מחזיר. נופלת חזרה למחרוזת כללית אם המבנה הצפוי לא קיים."""
+    try:
+        return e.body.get("error", {}).get("message") or str(e)
+    except Exception:
+        return str(e)
+
+
 def _get_client():
     global _client
     if _client is None:
@@ -181,7 +191,7 @@ async def _call_model(user_message: str) -> str | None:
         print("[coach_llm] שגיאת רשת מול ה-API - נופלים למשוב הקיים.")
         return None
     except anthropic.APIStatusError as e:
-        print(f"[coach_llm] שגיאת שרת מה-API (status={e.status_code}) - נופלים למשוב הקיים.")
+        print(f"[coach_llm] שגיאת API (status={e.status_code}): {_anthropic_error_message(e)} - נופלים למשוב הקיים.")
         return None
     except Exception as e:  # noqa: BLE001 - כל כשל אחר (כולל timeout) -> נפילה חזרה, בלי לחשוף פרטים
         print(f"[coach_llm] כשל לא צפוי ({type(e).__name__}) בקריאה ל-API - נופלים למשוב הקיים.")
@@ -215,6 +225,6 @@ async def test_connection():
     except anthropic.APIConnectionError:
         return "שגיאת רשת מול Anthropic - בדקו את החיבור לאינטרנט ונסו שוב."
     except anthropic.APIStatusError as e:
-        return f"שגיאת שרת מה-API (קוד {e.status_code})."
+        return f"שגיאה מ-Anthropic (קוד {e.status_code}): {_anthropic_error_message(e)}"
     except Exception as e:  # noqa: BLE001 - הודעה כללית בלבד, בלי לחשוף פרטי החריגה
         return f"כשל לא צפוי ({type(e).__name__}) בעת ניסיון החיבור."
