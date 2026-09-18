@@ -1,11 +1,15 @@
 """אינטגרציה אופציונלית עם Claude (Anthropic API), בצד השרת בלבד, למאמן החכם
 של "מאמן התנועה שלי".
 
-המפתח נקרא **רק** ממשתנה הסביבה `ANTHROPIC_API_KEY` (איך ה-SDK הרשמי מתנהג
-כברירת מחדל) - אף פעם לא מקודד בקוד, לא נשלח לדפדפן, ולא נכתב ליומן (גם לא
-בהודעות שגיאה - רק שם סוג השגיאה, לא תוכן החריגה). אם המפתח לא מוגדר, המאמן
-החכם כבוי לגמרי והאפליקציה ממשיכה לעבוד רק עם המשוב מבוסס-הכללים הקיים
-(`rep_logic.pace_feedback`) - בלי שום שינוי בהתנהגות הקיימת.
+**מקור המפתח (לפי סדר עדיפות):**
+1. משתנה הסביבה `ANTHROPIC_API_KEY`, אם הוגדר במפורש להרצה הנוכחית - override מכוון וזמני.
+2. אחרת, המפתח השמור ב-macOS Keychain (הוגדר פעם אחת דרך `webapp/setup_api_key.py`,
+   נשמר בין הפעלות, לא בקובץ ולא בקוד - ראו `webapp/keychain_secret.py`).
+3. אם אין אף אחד מהשניים - המאמן החכם כבוי לגמרי, והאפליקציה ממשיכה לעבוד רק עם
+   המשוב מבוסס-הכללים הקיים (`rep_logic.pace_feedback`) - בלי שום שינוי בהתנהגות הקיימת.
+
+המפתח **אף פעם** לא מודפס, לא נכתב ליומן (גם לא בהודעות שגיאה - רק שם סוג
+השגיאה, לא תוכן החריגה), לא נשלח לדפדפן, ולא מקודד בקוד.
 
 **לא נשלחות תמונות/וידאו למודל בשלב הזה** - רק נתונים מספריים/טקסטואליים
 שכבר קיימים במערכת (מספר חזרה, משכי ירידה/עלייה, יעד קצב, המשוב הקיים וכו').
@@ -16,27 +20,55 @@
 """
 
 import os
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from keychain_secret import get_stored_key  # noqa: E402
 
 MODEL_ID = "claude-haiku-4-5"
 REQUEST_TIMEOUT_SEC = 8.0
 
 _client = None
 _enabled: bool | None = None
+_key_source: str | None = None  # לצורכי לוג בלבד ("env" / "keychain" / None) - אף פעם לא הערך עצמו
+
+
+def _resolve_api_key() -> str | None:
+    """מחזירה את המפתח לשימוש, לפי סדר העדיפות (env קודם, אחר כך Keychain). לא מדפיסה כלום."""
+    global _key_source
+    env_key = os.environ.get("ANTHROPIC_API_KEY")
+    if env_key:
+        _key_source = "env"
+        return env_key
+    stored_key = get_stored_key()
+    if stored_key:
+        _key_source = "keychain"
+        return stored_key
+    _key_source = None
+    return None
 
 
 def smart_coach_enabled() -> bool:
-    """True אם ANTHROPIC_API_KEY מוגדר בסביבה. נבדק פעם אחת ונשמר בזיכרון."""
+    """True אם יש מפתח זמין (env או Keychain). נבדק פעם אחת ונשמר בזיכרון."""
     global _enabled
     if _enabled is None:
-        _enabled = bool(os.environ.get("ANTHROPIC_API_KEY"))
+        _enabled = bool(_resolve_api_key())
     return _enabled
+
+
+def key_source_label() -> str:
+    """תיאור *מקור* המפתח בעברית, לצורך תצוגה/לוג - אף פעם לא הערך של המפתח עצמו."""
+    smart_coach_enabled()  # מוודא ש-_key_source חושב
+    return {"env": "משתנה סביבה ANTHROPIC_API_KEY", "keychain": "macOS Keychain"}.get(_key_source, "לא הוגדר")
 
 
 def _get_client():
     global _client
     if _client is None:
         import anthropic
-        _client = anthropic.AsyncAnthropic()  # קורא ANTHROPIC_API_KEY מהסביבה אוטומטית
+        key = _resolve_api_key()
+        _client = anthropic.AsyncAnthropic(api_key=key)
     return _client
 
 
@@ -154,3 +186,35 @@ async def _call_model(user_message: str) -> str | None:
     except Exception as e:  # noqa: BLE001 - כל כשל אחר (כולל timeout) -> נפילה חזרה, בלי לחשוף פרטים
         print(f"[coach_llm] כשל לא צפוי ({type(e).__name__}) בקריאה ל-API - נופלים למשוב הקיים.")
         return None
+
+
+async def test_connection():
+    """בדיקת חיבור קצרה מול Anthropic. מחזירה True בהצלחה, או מחרוזת שגיאה מועילה
+    בעברית שלעולם לא כוללת את המפתח עצמו או כל תוכן אחר מהבקשה/התשובה - רק סוג
+    השגיאה. לא נקראת אוטומטית משום מקום - יש להריץ אותה במפורש (webapp/test_api_connection.py)."""
+    import anthropic
+
+    key = _resolve_api_key()
+    if not key:
+        return "לא נמצא מפתח API (לא ב-Keychain ולא במשתנה הסביבה ANTHROPIC_API_KEY)."
+
+    try:
+        client = anthropic.AsyncAnthropic(api_key=key)
+        await client.with_options(timeout=REQUEST_TIMEOUT_SEC, max_retries=0).messages.create(
+            model=MODEL_ID,
+            max_tokens=1,
+            messages=[{"role": "user", "content": "בדיקת חיבור"}],
+        )
+        return True
+    except anthropic.AuthenticationError:
+        return "המפתח שנשמר אינו תקין (שגיאת אימות מ-Anthropic)."
+    except anthropic.PermissionDeniedError:
+        return "המפתח תקין אך אין לו הרשאה מספיקה לפעולה הזו."
+    except anthropic.RateLimitError:
+        return "הבקשה נחסמה זמנית עקב הגבלת קצב - נסו שוב בעוד רגע."
+    except anthropic.APIConnectionError:
+        return "שגיאת רשת מול Anthropic - בדקו את החיבור לאינטרנט ונסו שוב."
+    except anthropic.APIStatusError as e:
+        return f"שגיאת שרת מה-API (קוד {e.status_code})."
+    except Exception as e:  # noqa: BLE001 - הודעה כללית בלבד, בלי לחשוף פרטי החריגה
+        return f"כשל לא צפוי ({type(e).__name__}) בעת ניסיון החיבור."

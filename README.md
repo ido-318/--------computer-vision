@@ -25,7 +25,7 @@
 - [ultralytics](https://github.com/ultralytics/ultralytics) 8.4.x (מודל YOLO11-Pose)
 - [opencv-python](https://github.com/opencv/opencv-python) 5.x
 - [fastapi](https://fastapi.tiangolo.com/) + [uvicorn](https://www.uvicorn.org/) (רק לממשק ה-web, `webapp/`)
-- [anthropic](https://github.com/anthropics/anthropic-sdk-python) (רק אם רוצים להפעיל את המאמן החכם - אופציונלי לגמרי)
+- [anthropic](https://github.com/anthropics/anthropic-sdk-python) + [keyring](https://github.com/jaraco/keyring) (רק אם רוצים להפעיל את המאמן החכם - אופציונלי לגמרי; `keyring` נדרש לשמירת המפתח ב-macOS Keychain)
 - מצלמת מחשב (לסקריפט הניתוח החי ולממשק ה-web)
 
 ## התקנה
@@ -36,7 +36,7 @@ source venv/bin/activate      # ב-macOS/Linux
 pip install --upgrade pip
 pip install ultralytics opencv-python
 pip install fastapi "uvicorn[standard]"    # רק אם רוצים להריץ את ממשק ה-web (webapp/)
-pip install anthropic                      # רק אם רוצים להפעיל את המאמן החכם (אופציונלי)
+pip install anthropic keyring               # רק אם רוצים להפעיל את המאמן החכם (אופציונלי)
 ```
 
 מודל ה-Pose (`yolo11n-pose.pt`, כ-6MB) יורד אוטומטית בפעם הראשונה שסקריפט טוען אותו.
@@ -57,6 +57,10 @@ scripts/
 
 webapp/
 ├── server.py              # שרת FastAPI: פותח את המצלמה (OpenCV), מריץ YOLO+rep_logic.py, מזרים תוצאות ב-WebSocket
+├── coach_llm.py           # אינטגרציית LLM אופציונלית (Anthropic API), בצד השרת בלבד
+├── keychain_secret.py     # שמירה/קריאה של מפתח ה-API ב-macOS Keychain (חבילת keyring)
+├── setup_api_key.py       # פקודת הגדרה: הזנת המפתח בהקלדה מוסתרת ושמירתו ב-Keychain
+├── test_api_connection.py # בדיקת חיבור ידנית מול Anthropic (לא רצה אוטומטית)
 └── static/
     ├── index.html         # מבנה הדף (עברית, RTL)
     ├── style.css           # עיצוב: רקע כחול כהה, כרטיסים, מנטה/כתום, RTL
@@ -127,12 +131,26 @@ python webapp/server.py
 
 **ספק ומודל:** Anthropic, מודל `claude-haiku-4-5` - נבחר במכוון (לא ברירת המחדל של הפרויקטים החדשים) כי זו קריאה קצרה וזולה ברקע (משפט אחד בעברית) שרצה אחרי כל חזרה בלי לעצור את זרם המצלמה, וחשוב שתהיה מהירה וזולה. אפשר להחליף בקלות ל-`claude-opus-5` ב-`webapp/coach_llm.py` אם רוצים תשובות עשירות יותר, במחיר זמן/עלות גבוהים יותר.
 
-**איך מגדירים מפתח API:**
+**איך מגדירים מפתח API (דרך macOS Keychain - מומלץ):**
 ```bash
-export ANTHROPIC_API_KEY="sk-ant-..."   # בטרמינל שממנו מריצים את webapp/server.py, לפני ההרצה
+pip install keyring   # אם עוד לא מותקן
+python webapp/setup_api_key.py
+```
+מבקש את המפתח בהקלדה מוסתרת (לא מוצג על המסך) ושומר אותו ב-macOS Keychain - נשאר שמור בין הפעלות, לא בקובץ ולא בקוד. אחר כך פשוט מריצים:
+```bash
 python webapp/server.py
 ```
-בלי המשתנה הזה, המאמן החכם כבוי אוטומטית והאפליקציה ממשיכה לעבוד רגיל עם המשוב מבוסס-הכללים בלבד (אין צורך בשום שינוי קוד). **המפתח לעולם לא נשלח לדפדפן, לא מקודד בקוד, ולא נכתב ליומן** - הוא נקרא רק על ידי `webapp/coach_llm.py` בצד השרת, דרך משתנה הסביבה.
+והשרת קורא את המפתח מה-Keychain אוטומטית. פקודות נוספות: `python webapp/setup_api_key.py --status` (בודק אם יש מפתח שמור, בלי לחשוף אותו) ו-`--delete` (מוחק אותו).
+
+**חלופה:** אפשר גם להגדיר `export ANTHROPIC_API_KEY="sk-ant-..."` בטרמינל לפני הרצת השרת - אם מוגדר, **הוא מקבל עדיפות על פני מה שב-Keychain** לאותה הרצה בלבד (שימושי לבדיקה חד-פעמית עם מפתח אחר בלי לשנות את מה שנשמר).
+
+בלי אף אחד מהשניים, המאמן החכם כבוי אוטומטית והאפליקציה ממשיכה לעבוד רגיל עם המשוב מבוסס-הכללים בלבד. **המפתח לעולם לא נשלח לדפדפן, לא מקודד בקוד, ולא נכתב ליומן** (השרת מדפיס רק את *מקור* המפתח - "Keychain" או "משתנה סביבה" - לעולם לא את הערך).
+
+**בדיקת חיבור** (מריצים ידנית, אחרי הגדרת מפתח):
+```bash
+python webapp/test_api_connection.py
+```
+שולח בקשה קצרה ל-Anthropic ומדפיס רק "החיבור הצליח" או הודעת שגיאה מועילה - לעולם לא את המפתח או תוכן אחר.
 
 **מה נשלח למודל:** רק טקסט/מספרים - מספר החזרה, משכי ירידה/עלייה, האם המדידה משוערת, יעד הקצב (אם הוגדר) והמשוב הקיים המחושב לפי הכללים; לשאלות צ'אט - גם צד המדידה, יעד החזרות, ופירוט כל החזרות שהושלמו בסט. **לא נשלחות תמונות או וידאו בשלב הזה.**
 

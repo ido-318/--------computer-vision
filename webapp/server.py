@@ -60,6 +60,11 @@ async def lifespan(app: FastAPI):
     global MODEL
     print(f"טוען מודל {MODEL_NAME} ...")
     MODEL = YOLO(MODEL_NAME)
+    if coach_llm.smart_coach_enabled():
+        print(f"מאמן חכם: פעיל (מקור המפתח: {coach_llm.key_source_label()})")
+    else:
+        print("מאמן חכם: כבוי (אין מפתח ב-Keychain ולא במשתנה הסביבה ANTHROPIC_API_KEY) - "
+              "עובד רק עם המשוב מבוסס-הכללים.")
     print("מוכן. פתחו http://localhost:8000")
     yield
 
